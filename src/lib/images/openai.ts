@@ -3,16 +3,15 @@ import type { ImageProvider } from "./index";
 
 const MODEL = process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2";
 const QUALITY = (process.env.OPENAI_IMAGE_QUALITY ?? "medium") as "low" | "medium" | "high";
-const SIZE = "1536x1024"; // landscape spread
 
 export const openaiProvider: ImageProvider = {
   name: "openai",
-  async generate({ prompt, references }) {
+  async generate({ prompt, references, orientation = "landscape" }) {
     const client = new OpenAI();
     const common = {
       model: MODEL,
       prompt,
-      size: SIZE,
+      size: orientation === "portrait" ? "1024x1536" : "1536x1024",
       quality: QUALITY,
       output_format: "jpeg" as const,
       output_compression: 90,

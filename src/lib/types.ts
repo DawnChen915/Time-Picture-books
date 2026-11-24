@@ -1,27 +1,5 @@
 import { z } from "zod";
-
-export const ART_STYLES = {
-  watercolor: { label: "温柔水彩", prompt: "soft watercolor children's picture book illustration, gentle textures, warm pastel palette" },
-  crayon: { label: "童趣蜡笔", prompt: "hand-drawn crayon and colored pencil children's book illustration, playful strokes, bright colors" },
-  flat: { label: "扁平插画", prompt: "modern flat vector children's book illustration, clean shapes, cheerful limited palette" },
-  cartoon3d: { label: "3D 卡通", prompt: "cute 3D cartoon render for a children's book, soft lighting, rounded shapes, vibrant colors" },
-} as const;
-
-export type ArtStyle = keyof typeof ART_STYLES;
-
-export const BookInputSchema = z.object({
-  childName: z.string().trim().min(1, "请填写孩子的名字").max(20),
-  age: z.coerce.number().int().min(1).max(12),
-  gender: z.enum(["boy", "girl", "unspecified"]),
-  appearance: z.string().trim().max(200).default(""),
-  interests: z.string().trim().max(200).default(""),
-  theme: z.string().trim().min(1, "请写一下故事主题").max(300),
-  artStyle: z.enum(Object.keys(ART_STYLES) as [ArtStyle, ...ArtStyle[]]),
-  pageCount: z.coerce.number().int().min(6).max(8),
-  extra: z.string().trim().max(300).default(""),
-});
-
-export type BookInput = z.infer<typeof BookInputSchema>;
+import type { Role } from "@/templates";
 
 export type IllustrationStatus = "pending" | "generating" | "done" | "error";
 
@@ -34,19 +12,41 @@ export interface Illustration {
   startedAt?: string;
 }
 
+export interface Member {
+  role: Role;
+  /** Uploaded photo, deleted once the avatar is drawn. */
+  photoFile?: string;
+  photoMimeType?: string;
+  /** Optional text description, used when there is no photo or alongside it. */
+  description: string;
+  avatar: Illustration;
+}
+
+/** A family keeps its members' cartoon avatars so later books can reuse them. */
+export interface Family {
+  id: string;
+  createdAt: string;
+  childName: string;
+  childAge: number;
+  childGender: "boy" | "girl" | "unspecified";
+  members: Partial<Record<Role, Member>>;
+}
+
 export interface BookPage {
   text: string;
+  cast: Role[];
   illustration: Illustration;
 }
 
 export interface Book {
   id: string;
   createdAt: string;
-  input: BookInput;
+  familyId: string;
+  templateId: string;
+  childName: string;
   title: string;
   dedication: string;
-  characterSheet: string;
-  /** slot 0 = cover */
+  cast: Role[];
   cover: Illustration;
   pages: BookPage[];
 }
@@ -56,3 +56,9 @@ export function getSlot(book: Book, slot: number): Illustration | undefined {
   if (slot === 0) return book.cover;
   return book.pages[slot - 1]?.illustration;
 }
+
+export const ChildInfoSchema = z.object({
+  childName: z.string().trim().min(1, "请填写宝宝的名字").max(20),
+  childAge: z.coerce.number().int().min(0).max(12),
+  childGender: z.enum(["boy", "girl", "unspecified"]),
+});

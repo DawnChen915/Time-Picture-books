@@ -41,7 +41,7 @@ export function BookPageView({ book, index, onRetry }: { book: Book; index: numb
         <Picture book={book} slot={0} ill={book.cover} onRetry={onRetry} />
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/25 to-transparent px-[6%] pb-[5%] pt-[12%] text-white">
           <h1 className="font-serif text-[clamp(1.5rem,5cqw,3.5rem)] font-bold leading-tight drop-shadow">{book.title}</h1>
-          <p className="mt-[1%] text-[clamp(0.8rem,1.8cqw,1.25rem)] opacity-90">献给 {book.input.childName}</p>
+          <p className="mt-[1%] text-[clamp(0.8rem,1.8cqw,1.25rem)] opacity-90">献给 {book.childName}</p>
         </div>
       </div>
     );

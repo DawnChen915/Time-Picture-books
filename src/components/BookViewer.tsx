@@ -2,14 +2,17 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Book } from "@/lib/types";
+import type { Book, Family } from "@/lib/types";
+import { ROLE_LABEL, type Role } from "@/templates";
 import { getSlot } from "@/lib/types";
 import { BookPageView } from "./BookPageView";
 
 const PAGE_CONCURRENCY = 2;
 
-export function BookViewer({ initialBook }: { initialBook: Book }) {
+export function BookViewer({ initialBook, initialFamily }: { initialBook: Book; initialFamily: Family }) {
   const [book, setBook] = useState(initialBook);
+  const [family, setFamily] = useState(initialFamily);
+  const avatarStarted = useRef(new Set<Role>());
   const [index, setIndex] = useState(0);
   const [exporting, setExporting] = useState(false);
   const started = useRef(new Set<number>());
@@ -23,7 +26,10 @@ export function BookViewer({ initialBook }: { initialBook: Book }) {
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/books/${book.id}`, { cache: "no-store" });
-    if (res.ok) setBook(await res.json());
+    if (!res.ok) return;
+    const json = (await res.json()) as { book: Book; family: Family };
+    setBook(json.book);
+    setFamily(json.family);
   }, [book.id]);
 
   const illustrate = useCallback(
@@ -40,25 +46,47 @@ export function BookViewer({ initialBook }: { initialBook: Book }) {
     [book.id, refresh],
   );
 
-  // Drive illustration generation: cover first (it becomes the character reference), then pages.
+  const avatarStatus = (r: Role) => family.members[r]?.avatar.status;
+  const avatarsDone = book.cast.every((r) => avatarStatus(r) === "done");
+
+  const drawAvatar = useCallback(
+    async (role: Role) => {
+      avatarStarted.current.add(role);
+      setFamily((f) => {
+        const next = structuredClone(f);
+        next.members[role]!.avatar.status = "generating";
+        return next;
+      });
+      await fetch(`/api/families/${family.id}/avatars/${role}`, { method: "POST" }).catch(() => {});
+      await refresh();
+    },
+    [family.id, refresh],
+  );
+
+  // Drive generation: first each person's cartoon avatar, then every page drawn from those avatars.
   useEffect(() => {
-    const pending = (s: number) => getSlot(book, s)?.status === "pending" && !started.current.has(s);
-    if (book.cover.status !== "done") {
-      if (pending(0)) void illustrate(0);
+    if (!avatarsDone) {
+      book.cast
+        .filter((r) => avatarStatus(r) === "pending" && !avatarStarted.current.has(r))
+        .forEach((r) => void drawAvatar(r));
       return;
     }
+    const pending = (s: number) => getSlot(book, s)?.status === "pending" && !started.current.has(s);
     const inFlight = slots.filter((s) => getSlot(book, s)?.status === "generating").length;
     const queue = slots.filter(pending).slice(0, Math.max(0, PAGE_CONCURRENCY - inFlight));
     queue.forEach((s) => void illustrate(s));
-  }, [book, illustrate, slots]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book, family, illustrate, drawAvatar, slots, avatarsDone]);
 
   // If the page is reopened while the server is still drawing, poll until it finishes.
   useEffect(() => {
-    const generating = slots.some((s) => getSlot(book, s)?.status === "generating");
+    const generating =
+      slots.some((s) => getSlot(book, s)?.status === "generating") || book.cast.some((r) => avatarStatus(r) === "generating");
     if (!generating) return;
     const t = setInterval(refresh, 4000);
     return () => clearInterval(t);
-  }, [book, refresh, slots]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book, family, refresh, slots]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -90,7 +118,8 @@ export function BookViewer({ initialBook }: { initialBook: Book }) {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <Link href="/" className="text-sm text-stone-500 hover:text-stone-800">← 再做一本</Link>
         <div className="flex items-center gap-3 text-sm text-stone-500">
-          {!allDone && <span>插图进度 {doneCount}/{slots.length}</span>}
+          {!avatarsDone && <span>正在生成卡通形象…</span>}
+          {avatarsDone && !allDone && <span>插图进度 {doneCount}/{slots.length}</span>}
           <button
             onClick={onExport}
             disabled={!allDone || exporting}
@@ -100,6 +129,35 @@ export function BookViewer({ initialBook }: { initialBook: Book }) {
             {exporting ? "正在导出…" : "导出 PDF"}
           </button>
         </div>
+      </div>
+
+      <div className="mb-4 flex flex-wrap justify-center gap-4">
+        {book.cast.map((r) => {
+          const a = family.members[r]?.avatar;
+          return (
+            <div key={r} className="flex items-center gap-2 rounded-full bg-white py-1 pl-1 pr-3 text-sm shadow-sm ring-1 ring-stone-100">
+              {a?.status === "done" ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={`/api/families/${family.id}/avatars/${r}?v=${encodeURIComponent(a.file ?? "")}`} alt="" className="h-9 w-9 rounded-full bg-stone-50 object-cover object-top" />
+              ) : (
+                <span className={`h-9 w-9 rounded-full bg-stone-100 ${a?.status === "error" ? "" : "animate-pulse"}`} />
+              )}
+              <span>{ROLE_LABEL[r]}</span>
+              {a?.status === "error" && (
+                <button
+                  className="text-accent"
+                  title={a.error}
+                  onClick={() => {
+                    avatarStarted.current.delete(r);
+                    void drawAvatar(r);
+                  }}
+                >
+                  重新生成
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="relative mx-auto w-full max-w-4xl">

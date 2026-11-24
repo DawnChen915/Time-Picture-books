@@ -11,6 +11,8 @@ export interface ImageRequest {
   prompt: string;
   /** Earlier illustrations (e.g. the cover) to keep the character consistent. */
   references?: { data: Buffer; mimeType: string }[];
+  /** Page illustrations are landscape; avatars are portrait. Defaults to landscape. */
+  orientation?: "landscape" | "portrait";
 }
 
 export interface ImageProvider {

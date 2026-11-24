@@ -1,23 +1,46 @@
 # 时光绘本
 
-为孩子定制一本以 TA 为主角的绘本：填一张表，Claude 写出 6–8 页故事，OpenAI gpt-image 画插图，可以在线翻看并导出 PDF。
+为孩子做一本一家人当主角的绘本：选一个故事模板，上传宝宝和爸爸妈妈的照片，先生成卡通形象，再按模板把每一页画出来，可以在线翻看并导出 PDF。
+
+前期为控制成本，故事是固定模板（只替换宝宝的名字），只有插图是生成的；等验证了用户愿意付费，再做每本独一无二的故事。
 
 ## 快速开始
 
 ```bash
 npm install
-cp .env.example .env.local   # 填入 ANTHROPIC_API_KEY 和 OPENAI_API_KEY
+cp .env.example .env.local   # 填入 OPENAI_API_KEY
 npm run dev                  # http://localhost:3000
 ```
 
-没有 key 也能把流程跑一遍：`.env.local` 里设 `STORY_PROVIDER=mock`，并且不填 `OPENAI_API_KEY`（会自动用占位图）。
+不填 `OPENAI_API_KEY` 时会自动使用占位图，可以不花钱把流程走一遍。
 
 ## 生成流程
 
-1. **表单**（`src/components/BookForm.tsx`）：名字、年龄、性别、外貌、喜好、主题、画风、页数。
-2. **写故事**（`POST /api/books` → `src/lib/story.ts`）：Claude 用结构化输出返回标题、献词、角色设定（英文，供每张插图复用）、封面和每页的文字与插图提示词。
-3. **画插图**（`POST /api/books/:id/illustrations/:slot` → `src/lib/illustrate.ts`）：先画封面，再以封面为参考图画每一页，保持主角长相一致。前端同时画 2 页，页面会实时显示进度，失败的页可以单独重画。
-4. **翻看与导出**（`src/components/BookViewer.tsx`）：左右键或按钮翻页；插图画完后可导出 PDF（在浏览器里把每页渲染成图片再拼成 PDF，中文字体不会丢）。
+1. **选模板 + 填信息**（`src/components/BookForm.tsx`）：选故事，填宝宝的名字、年龄、性别，给故事里出现的每个人上传一张照片（可加一句描述）。
+2. **创建绘本**（`POST /api/books`）：保存照片，按模板生成每页文字。
+3. **生成卡通形象**（`POST /api/families/:id/avatars/:role`）：每人一次，用照片生成卡通形象。形象生成后原始照片会被删除。
+4. **画插图**（`POST /api/books/:id/illustrations/:slot`）：封面和每一页都把出场人物的形象作为参考图传给 gpt-image，保持人物一致。前端同时画 2 页，失败的页可以单独重画。
+5. **翻看与导出**（`src/components/BookViewer.tsx`）：左右键或按钮翻页；画完后可导出 PDF（在浏览器里把每页渲染成图片再拼成 PDF，中文字体不会丢）。
+
+形象按"家庭"保存，浏览器记住家庭 ID，下次做其他模板时可以直接复用，不用重新上传照片，也不会再次产生形象的生图费用。
+
+## 成本（每本）
+
+- 形象：每人 1 次生图，复用时为 0
+- 插图：封面 + 每页各 1 次，现有模板是 7–9 次
+- 不调用大语言模型
+
+## 模板
+
+模板都在 `src/templates/index.ts`：文字里的 `{name}` 会替换成宝宝的名字；`scene` 是英文画面描述，用 CHILD / MOM / DAD 指代人物；`cast` 列出这一页出场的人，决定传哪些形象作为参考图。新增模板只需要往 `TEMPLATES` 里加一项。
+
+现有 3 个（初稿，待改）：
+
+| 模板 | 主角 | 页数 |
+|---|---|---|
+| 宝宝的勇敢小脚丫 | 宝宝 | 6 |
+| 妈妈的魔法拥抱 | 宝宝、妈妈 | 7 |
+| 我们一家去海边 | 宝宝、妈妈、爸爸 | 8 |
 
 ## 目录
 
@@ -25,14 +48,14 @@ npm run dev                  # http://localhost:3000
 src/
   app/                    页面与 API 路由
   components/             表单、阅读器、PDF 导出
+  templates/              故事模板
   lib/
-    story.ts              Claude 生成故事
     images/               图像服务（openai / placeholder），换服务只需加一个 provider
-    illustrate.ts         插图生成与状态管理
-    storage.ts            本地文件存储（.data/books/<id>/）
+    illustrate.ts         形象与插图的生成流程、提示词
+    storage.ts            本地文件存储（.data/families、.data/books）
 ```
 
 ## 现阶段的限制
 
 - 数据存在本地磁盘，没有数据库、登录和付费；部署到 Serverless 平台前需要换成对象存储。
-- 一次生成大约 9 张图，按 OpenAI 的计费会产生费用，`OPENAI_IMAGE_QUALITY` 可以调低。
+- "家庭"只靠浏览器里保存的 ID 识别，换设备就找不到之前的形象。

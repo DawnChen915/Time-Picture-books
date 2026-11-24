@@ -15,19 +15,21 @@ function escape(s: string) {
 /** Offline stand-in so the whole flow can be tried without an image API key. */
 export const placeholderProvider: ImageProvider = {
   name: "placeholder",
-  async generate({ prompt }) {
+  async generate({ prompt, orientation = "landscape" }) {
+    const [w, h] = orientation === "portrait" ? [1024, 1536] : [1536, 1024];
     let hash = 0;
     for (const ch of prompt) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
     const [a, b] = PALETTES[hash % PALETTES.length];
     const words = prompt.split(/\s+/).slice(0, 60);
     const lines: string[] = [];
-    for (let i = 0; i < words.length && lines.length < 6; i += 10) lines.push(words.slice(i, i + 10).join(" "));
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024" viewBox="0 0 1536 1024">
+    const per = orientation === "portrait" ? 6 : 10;
+    for (let i = 0; i < words.length && lines.length < 8; i += per) lines.push(words.slice(i, i + per).join(" "));
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
   <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs>
-  <rect width="1536" height="1024" fill="url(#g)"/>
-  <circle cx="1250" cy="230" r="110" fill="#fff" opacity="0.6"/>
-  <text x="768" y="380" text-anchor="middle" font-family="sans-serif" font-size="56" fill="#7a6f6f">插图占位</text>
-  ${lines.map((l, i) => `<text x="768" y="${480 + i * 44}" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#8d8585">${escape(l)}</text>`).join("\n  ")}
+  <rect width="${w}" height="${h}" fill="url(#g)"/>
+  <circle cx="${w - 280}" cy="230" r="110" fill="#fff" opacity="0.6"/>
+  <text x="${w / 2}" y="${h / 2 - 130}" text-anchor="middle" font-family="sans-serif" font-size="56" fill="#7a6f6f">插图占位</text>
+  ${lines.map((l, i) => `<text x="${w / 2}" y="${h / 2 - 30 + i * 44}" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#8d8585">${escape(l)}</text>`).join("\n  ")}
 </svg>`;
     return { data: Buffer.from(svg), mimeType: "image/svg+xml", ext: "svg" };
   },
