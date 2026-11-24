@@ -1,0 +1,15 @@
+import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "时光绘本",
+  description: "为你的孩子定制一本独一无二的绘本",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="zh-CN">
+      <body className="antialiased">{children}</body>
+    </html>
+  );
+}
