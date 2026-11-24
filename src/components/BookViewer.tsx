@@ -160,6 +160,14 @@ export function BookViewer({ initialBook, initialFamily }: { initialBook: Book; 
         })}
       </div>
 
+      {book.cast
+        .filter((r) => family.members[r]?.avatar.status === "error")
+        .map((r) => (
+          <p key={r} className="mx-auto mb-4 max-w-4xl rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+            {ROLE_LABEL[r]}的形象没生成成功：{family.members[r]?.avatar.error}
+          </p>
+        ))}
+
       <div className="relative mx-auto w-full max-w-4xl">
         <div className="@container aspect-[4/3] w-full overflow-hidden rounded-2xl shadow-xl ring-1 ring-stone-200" style={{ containerType: "inline-size" }}>
           <div key={index} className="h-full w-full animate-[fadein_.35s_ease]">

@@ -1,5 +1,5 @@
 import { HOUSE_STYLE, ROLE_TOKEN, type Role } from "@/templates";
-import { getImageProvider } from "./images";
+import { generateImage } from "./images";
 import { deleteAsset, loadFamily, readAsset, saveAsset, updateBook, updateFamily } from "./storage";
 import { getSlot, type Family, type Illustration } from "./types";
 
@@ -74,7 +74,6 @@ async function runIllustration(opts: {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`illustration ${opts.label} failed:`, err);
     await opts.finish((i) => {
       i.status = "error";
       i.error = message;
@@ -104,7 +103,7 @@ export async function drawAvatar(familyId: string, role: Role) {
       const references = m.photoFile
         ? [{ data: await readAsset("families", familyId, m.photoFile), mimeType: m.photoMimeType ?? "image/jpeg" }]
         : [];
-      return getImageProvider().generate({ prompt: m.avatar.prompt, references, orientation: "portrait" });
+      return generateImage(`family ${familyId} avatar ${role}`, { prompt: m.avatar.prompt, references, orientation: "portrait" });
     },
     save: (file, data) => saveAsset("families", familyId, file, data),
     finish: async (fn) => {
@@ -154,7 +153,7 @@ export async function drawBookSlot(bookId: string, slot: number) {
         if (avatar.mimeType === "image/svg+xml") continue; // placeholder avatars can't be used as references
         references.push({ data: await readAsset("families", familyId, avatar.file), mimeType: avatar.mimeType! });
       }
-      return getImageProvider().generate({ prompt: scenePrompt(family, cast, prompt), references });
+      return generateImage(`book ${bookId} slot ${slot}`, { prompt: scenePrompt(family, cast, prompt), references });
     },
     save: (file, data) => saveAsset("books", bookId, file, data),
     finish: async (fn) => {

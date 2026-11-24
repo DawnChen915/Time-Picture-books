@@ -14,6 +14,13 @@ npm run dev                  # http://localhost:3000
 
 不填 `OPENAI_API_KEY` 时会自动使用占位图，可以不花钱把流程走一遍。
 
+### 一直转圈 / 生成失败怎么办
+
+1. 运行 `npm run check:openai`，它会检查 key 有没有读到、能不能连上 OpenAI、能不能用配置的图像模型（不会生成图片，不花钱）。
+2. 在国内需要代理：Node 不会自动使用系统代理，要在 `.env.local` 里加 `HTTPS_PROXY=http://127.0.0.1:端口`（你的代理软件的 HTTP 端口），然后重启 `npm run dev`。
+3. 运行 `npm run dev` 的终端会打印每张图的 `[images] ... start / done / failed`，失败原因也会显示在页面上。
+4. 改了 `.env.local` 之后要重启 `npm run dev` 才会生效。
+
 ## 生成流程
 
 1. **选模板 + 填信息**（`src/components/BookForm.tsx`）：选故事，填宝宝的名字、年龄、性别，给故事里出现的每个人上传一张照片（可加一句描述）。
