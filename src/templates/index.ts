@@ -6,6 +6,8 @@
  * in `cast` so their avatar is passed to the image model.
  */
 
+import type { StageId } from "@/lib/stages";
+
 export type Role = "child" | "mom" | "dad";
 
 export const ROLE_LABEL: Record<Role, string> = { child: "宝宝", mom: "妈妈", dad: "爸爸" };
@@ -21,6 +23,9 @@ export interface StoryTemplate {
   id: string;
   title: string;
   summary: string;
+  /** Which "时光" shelf the story sits on, and the ages it is written for. */
+  stage: StageId;
+  ages: [number, number];
   cast: Role[];
   cover: { scene: string };
   dedication: string;
@@ -35,6 +40,8 @@ export const TEMPLATES: StoryTemplate[] = [
     id: "brave-feet",
     title: "{name}的勇敢小脚丫",
     summary: "第一次挑战高高的滑梯，学会害怕的时候也愿意试一试。",
+    stage: "curious",
+    ages: [3, 5],
     cast: ["child"],
     dedication: "愿{name}永远有试一试的勇气。",
     cover: { scene: "CHILD standing on top of a small green hill in a park at sunrise, arms raised happily, a little squirrel nearby" },
@@ -75,6 +82,8 @@ export const TEMPLATES: StoryTemplate[] = [
     id: "mom-magic-hug",
     title: "妈妈的魔法拥抱",
     summary: "{name}发现妈妈的拥抱有魔法，有一天也把魔法送给了妈妈。",
+    stage: "babble",
+    ages: [2, 4],
     cast: ["child", "mom"],
     dedication: "送给{name}和妈妈：每一个拥抱，都是魔法。",
     cover: { scene: "MOM and CHILD hugging warmly, soft glowing sparkles floating around them, cozy home background" },
@@ -120,6 +129,8 @@ export const TEMPLATES: StoryTemplate[] = [
     id: "family-beach",
     title: "我们一家去海边",
     summary: "全家去海边堆沙堡，被海浪冲塌后，一起盖了一座和海浪做朋友的城堡。",
+    stage: "curious",
+    ages: [3, 6],
     cast: ["child", "mom", "dad"],
     dedication: "给{name}、爸爸和妈妈：最好的风景，是我们在一起。",
     cover: { scene: "DAD, MOM and CHILD running happily along the shoreline holding hands, waves and seagulls, bright summer day" },

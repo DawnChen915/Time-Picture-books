@@ -1,216 +1,217 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Book, Family } from "@/lib/types";
-import { ROLE_LABEL, type Role } from "@/templates";
+import { ageLabel } from "@/lib/stages";
+import type { Book, Family, Illustration } from "@/lib/types";
 import { getSlot } from "@/lib/types";
-import { BookPageView } from "./BookPageView";
+import { ROLE_LABEL, type Role } from "@/templates";
+import { BookPageView, IllustrationPicture, illustrationUrl, type PageContent } from "./BookPageView";
+import { Flipbook } from "./Flipbook";
+import { postDraw } from "./postDraw";
+import { avatarUrl } from "./useSavedFamily";
 
 const PAGE_CONCURRENCY = 2;
+/** How often the viewer re-sends a request that never reached the image step (network, server restart). */
+const MAX_CLIENT_TRIES = 3;
+
+type Json = { book: Book; family: Family };
 
 export function BookViewer({ initialBook, initialFamily }: { initialBook: Book; initialFamily: Family }) {
   const [book, setBook] = useState(initialBook);
   const [family, setFamily] = useState(initialFamily);
-  const avatarStarted = useRef(new Set<Role>());
-  const [index, setIndex] = useState(0);
-  const [exporting, setExporting] = useState(false);
-  const started = useRef(new Set<number>());
-  const exportRoot = useRef<HTMLDivElement>(null);
+  const inFlight = useRef(new Set<number>());
+  const tries = useRef(new Map<number, number>());
+  const avatarInFlight = useRef(new Set<Role>());
+  const avatarTries = useRef(new Map<Role, number>());
+  const [retryingAll, setRetryingAll] = useState(false);
 
-  const totalPages = book.pages.length + 2; // cover + story pages + back page
   const pageCount = book.pages.length;
   const slots = useMemo(() => Array.from({ length: pageCount + 1 }, (_, i) => i), [pageCount]);
-  const allDone = slots.every((s) => getSlot(book, s)?.status === "done");
-  const doneCount = slots.filter((s) => getSlot(book, s)?.status === "done").length;
-
-  const refresh = useCallback(async () => {
-    const res = await fetch(`/api/books/${book.id}`, { cache: "no-store" });
-    if (!res.ok) return;
-    const json = (await res.json()) as { book: Book; family: Family };
-    setBook(json.book);
-    setFamily(json.family);
-  }, [book.id]);
-
-  const illustrate = useCallback(
-    async (slot: number) => {
-      started.current.add(slot);
-      setBook((b) => {
-        const next = structuredClone(b);
-        getSlot(next, slot)!.status = "generating";
-        return next;
-      });
-      await fetch(`/api/books/${book.id}/illustrations/${slot}`, { method: "POST" }).catch(() => {});
-      await refresh();
-    },
-    [book.id, refresh],
-  );
+  const statusOf = (s: number) => getSlot(book, s)?.status;
+  const allDone = slots.every((s) => statusOf(s) === "done");
+  const doneCount = slots.filter((s) => statusOf(s) === "done").length;
+  const failed = slots.filter((s) => statusOf(s) === "error");
 
   const avatarStatus = (r: Role) => family.members[r]?.avatar.status;
   const avatarsDone = book.cast.every((r) => avatarStatus(r) === "done");
 
+  const refresh = useCallback(async (): Promise<Json | null> => {
+    const res = await fetch(`/api/books/${book.id}`, { cache: "no-store" }).catch(() => null);
+    if (!res?.ok) return null;
+    const json = (await res.json()) as Json;
+    setBook(json.book);
+    setFamily(json.family);
+    return json;
+  }, [book.id]);
+
+  const patchSlot = useCallback((slot: number, patch: Partial<Illustration>) => {
+    setBook((b) => {
+      const next = structuredClone(b);
+      Object.assign(getSlot(next, slot)!, patch);
+      return next;
+    });
+  }, []);
+
+  const illustrate = useCallback(
+    async (slot: number) => {
+      inFlight.current.add(slot);
+      tries.current.set(slot, (tries.current.get(slot) ?? 0) + 1);
+      patchSlot(slot, { status: "generating", error: undefined, attempt: undefined, retryReason: undefined });
+      const message = await postDraw(`/api/books/${book.id}/illustrations/${slot}`);
+      inFlight.current.delete(slot);
+      const json = await refresh();
+      // If the server never recorded a result, say so (with a retry button) instead of spinning forever.
+      const ill = json && getSlot(json.book, slot);
+      if (message && (!ill || ill.status === "pending")) patchSlot(slot, { status: "error", error: message });
+    },
+    [book.id, refresh, patchSlot],
+  );
+
   const drawAvatar = useCallback(
     async (role: Role) => {
-      avatarStarted.current.add(role);
+      avatarInFlight.current.add(role);
+      avatarTries.current.set(role, (avatarTries.current.get(role) ?? 0) + 1);
       setFamily((f) => {
         const next = structuredClone(f);
-        next.members[role]!.avatar.status = "generating";
+        Object.assign(next.members[role]!.avatar, { status: "generating", error: undefined, attempt: undefined, retryReason: undefined });
         return next;
       });
-      await fetch(`/api/families/${family.id}/avatars/${role}`, { method: "POST" }).catch(() => {});
-      await refresh();
+      const message = await postDraw(`/api/families/${family.id}/avatars/${role}`);
+      avatarInFlight.current.delete(role);
+      const json = await refresh();
+      const avatar = json?.family.members[role]?.avatar;
+      if (message && (!avatar || avatar.status === "pending")) {
+        setFamily((f) => {
+          const next = structuredClone(f);
+          Object.assign(next.members[role]!.avatar, { status: "error", error: message });
+          return next;
+        });
+      }
     },
     [family.id, refresh],
   );
 
   // Drive generation: first each person's cartoon avatar, then every page drawn from those avatars.
   useEffect(() => {
+    if (allDone) return;
     if (!avatarsDone) {
       book.cast
-        .filter((r) => avatarStatus(r) === "pending" && !avatarStarted.current.has(r))
+        .filter((r) => avatarStatus(r) === "pending" && !avatarInFlight.current.has(r) && (avatarTries.current.get(r) ?? 0) < MAX_CLIENT_TRIES)
         .forEach((r) => void drawAvatar(r));
       return;
     }
-    const pending = (s: number) => getSlot(book, s)?.status === "pending" && !started.current.has(s);
-    const inFlight = slots.filter((s) => getSlot(book, s)?.status === "generating").length;
-    const queue = slots.filter(pending).slice(0, Math.max(0, PAGE_CONCURRENCY - inFlight));
+    const running = slots.filter((s) => inFlight.current.has(s) || statusOf(s) === "generating").length;
+    const queue = slots
+      .filter((s) => statusOf(s) === "pending" && !inFlight.current.has(s) && (tries.current.get(s) ?? 0) < MAX_CLIENT_TRIES)
+      .slice(0, Math.max(0, PAGE_CONCURRENCY - running));
     queue.forEach((s) => void illustrate(s));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [book, family, illustrate, drawAvatar, slots, avatarsDone]);
+  }, [book, family, illustrate, drawAvatar, slots, avatarsDone, allDone]);
 
-  // If the page is reopened while the server is still drawing, poll until it finishes.
+  // While anything is being drawn (here or in another tab), poll so progress and retries show up.
   useEffect(() => {
-    const generating =
-      slots.some((s) => getSlot(book, s)?.status === "generating") || book.cast.some((r) => avatarStatus(r) === "generating");
+    const generating = slots.some((s) => statusOf(s) === "generating") || book.cast.some((r) => avatarStatus(r) === "generating");
     if (!generating) return;
     const t = setInterval(refresh, 4000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book, family, refresh, slots]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") setIndex((i) => Math.min(totalPages - 1, i + 1));
-      if (e.key === "ArrowLeft") setIndex((i) => Math.max(0, i - 1));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [totalPages]);
-
-  async function onExport() {
-    if (!exportRoot.current) return;
-    setExporting(true);
-    try {
-      const { exportBookPdf } = await import("./exportPdf");
-      await exportBookPdf(exportRoot.current, `${book.title}.pdf`);
-    } finally {
-      setExporting(false);
-    }
-  }
-
   const retry = (slot: number) => {
-    started.current.delete(slot);
+    tries.current.delete(slot);
     void illustrate(slot);
   };
 
+  async function retryAllFailed() {
+    setRetryingAll(true);
+    for (const s of failed) tries.current.delete(s);
+    await fetch(`/api/books/${book.id}/retry`, { method: "POST" }).catch(() => {});
+    await refresh();
+    setRetryingAll(false);
+  }
+
+  const retryAvatar = (role: Role) => {
+    avatarTries.current.delete(role);
+    void drawAvatar(role);
+  };
+
+  const content: PageContent = {
+    title: book.title,
+    subtitle: `献给 ${book.childName}${book.childAge !== undefined ? ` · ${ageLabel(book.childAge)}` : ""}`,
+    dedication: book.dedication,
+    pages: book.pages,
+  };
+
+  const avatarErrors = !allDone ? book.cast.filter((r) => avatarStatus(r) === "error") : [];
+
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 py-6">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <Link href="/" className="text-sm text-stone-500 hover:text-stone-800">← 再做一本</Link>
-        <div className="flex items-center gap-3 text-sm text-stone-500">
-          {!avatarsDone && <span>正在生成卡通形象…</span>}
-          {avatarsDone && !allDone && <span>插图进度 {doneCount}/{slots.length}</span>}
-          <button
-            onClick={onExport}
-            disabled={!allDone || exporting}
-            className="rounded-full bg-accent px-5 py-2 font-medium text-white disabled:opacity-50"
-            title={allDone ? "" : "插图画完后就可以导出"}
-          >
-            {exporting ? "正在导出…" : "导出 PDF"}
-          </button>
-        </div>
-      </div>
-
-      <div className="mb-4 flex flex-wrap justify-center gap-4">
-        {book.cast.map((r) => {
-          const a = family.members[r]?.avatar;
-          return (
-            <div key={r} className="flex items-center gap-2 rounded-full bg-white py-1 pl-1 pr-3 text-sm shadow-sm ring-1 ring-stone-100">
-              {a?.status === "done" ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={`/api/families/${family.id}/avatars/${r}?v=${encodeURIComponent(a.file ?? "")}`} alt="" className="h-9 w-9 rounded-full bg-stone-50 object-cover object-top" />
-              ) : (
-                <span className={`h-9 w-9 rounded-full bg-stone-100 ${a?.status === "error" ? "" : "animate-pulse"}`} />
-              )}
-              <span>{ROLE_LABEL[r]}</span>
-              {a?.status === "error" && (
-                <button
-                  className="text-accent"
-                  title={a.error}
-                  onClick={() => {
-                    avatarStarted.current.delete(r);
-                    void drawAvatar(r);
-                  }}
-                >
-                  重新生成
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {book.cast
-        .filter((r) => family.members[r]?.avatar.status === "error")
-        .map((r) => (
-          <p key={r} className="mx-auto mb-4 max-w-4xl rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-            {ROLE_LABEL[r]}的形象没生成成功：{family.members[r]?.avatar.error}
-          </p>
-        ))}
-
-      <div className="relative mx-auto w-full max-w-4xl">
-        <div className="@container aspect-[4/3] w-full overflow-hidden rounded-2xl shadow-xl ring-1 ring-stone-200" style={{ containerType: "inline-size" }}>
-          <div key={index} className="h-full w-full animate-[fadein_.35s_ease]">
-            <BookPageView book={book} index={index} onRetry={retry} />
+    <Flipbook
+      totalPages={pageCount + 2}
+      fileName={`${book.title}.pdf`}
+      canExport={allDone}
+      exportHint="插图画完后就可以导出"
+      back={{ href: "/books", label: "← 我的书架" }}
+      status={
+        <>
+          {!allDone && !avatarsDone && <span>正在生成卡通形象…</span>}
+          {!allDone && avatarsDone && <span>插图进度 {doneCount}/{slots.length}</span>}
+          {failed.length > 0 && (
+            <button
+              onClick={retryAllFailed}
+              disabled={retryingAll}
+              className="rounded-full bg-white px-4 py-2 text-accent ring-1 ring-accent/40 hover:bg-accent/5 disabled:opacity-60"
+            >
+              {retryingAll ? "正在安排…" : `重画失败的 ${failed.length} 页`}
+            </button>
+          )}
+        </>
+      }
+      banner={
+        <>
+          <div className="mb-4 flex flex-wrap justify-center gap-4">
+            {book.cast.map((r) => {
+              const a = family.members[r]?.avatar;
+              return (
+                <div key={r} className="flex items-center gap-2 rounded-full bg-white py-1 pl-1 pr-3 text-sm shadow-sm ring-1 ring-stone-100">
+                  {a?.status === "done" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={avatarUrl(family, r)} alt="" className="h-9 w-9 rounded-full bg-stone-50 object-cover object-top" />
+                  ) : (
+                    <span className={`h-9 w-9 rounded-full bg-stone-100 ${a?.status === "error" ? "" : "animate-pulse"}`} />
+                  )}
+                  <span>{ROLE_LABEL[r]}</span>
+                  {a?.status === "generating" && (a.attempt ?? 1) > 1 && <span className="text-xs text-stone-400">自动重试第 {a.attempt} 次</span>}
+                  {a?.status === "error" && (
+                    <button className="text-accent" title={a.error} onClick={() => retryAvatar(r)}>
+                      重新生成
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        </div>
-        <button
-          aria-label="上一页"
-          onClick={() => setIndex((i) => Math.max(0, i - 1))}
-          disabled={index === 0}
-          className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white p-3 shadow-md ring-1 ring-stone-200 disabled:opacity-0 sm:-translate-x-[130%]"
-        >
-          ‹
-        </button>
-        <button
-          aria-label="下一页"
-          onClick={() => setIndex((i) => Math.min(totalPages - 1, i + 1))}
-          disabled={index === totalPages - 1}
-          className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 rounded-full bg-white p-3 shadow-md ring-1 ring-stone-200 disabled:opacity-0 sm:translate-x-[130%]"
-        >
-          ›
-        </button>
-      </div>
-
-      <div className="mt-5 flex justify-center gap-1.5">
-        {Array.from({ length: totalPages }, (_, i) => (
-          <button
-            key={i}
-            aria-label={`第 ${i} 页`}
-            onClick={() => setIndex(i)}
-            className={`h-2 rounded-full transition-all ${i === index ? "w-6 bg-accent" : "w-2 bg-stone-300"}`}
-          />
-        ))}
-      </div>
-
-      {/* Off-screen copy of every page at a fixed size, used for PDF export. */}
-      <div ref={exportRoot} aria-hidden className="pointer-events-none fixed left-[-20000px] top-0">
-        {Array.from({ length: totalPages }, (_, i) => (
-          <div key={i} data-pdf-page className="h-[900px] w-[1200px] overflow-hidden" style={{ containerType: "inline-size" }}>
-            <BookPageView book={book} index={i} />
-          </div>
-        ))}
-      </div>
-    </main>
+          {avatarErrors.map((r) => (
+            <p key={r} className="mx-auto mb-4 w-full max-w-4xl rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              {ROLE_LABEL[r]}的形象没生成成功：{family.members[r]?.avatar.error}
+            </p>
+          ))}
+        </>
+      }
+      renderPage={(index, forPdf) => (
+        <BookPageView
+          content={content}
+          index={index}
+          picture={(slot) => {
+            const ill = getSlot(book, slot)!;
+            return <IllustrationPicture
+                src={illustrationUrl(book.id, slot, ill)}
+                ill={ill}
+                onRetry={forPdf ? undefined : () => retry(slot)}
+                queuedLabel={avatarsDone ? undefined : "等卡通形象画好后开始画…"}
+              />;
+          }}
+        />
+      )}
+    />
   );
 }

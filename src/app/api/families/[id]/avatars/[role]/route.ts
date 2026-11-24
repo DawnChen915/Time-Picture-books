@@ -1,23 +1,22 @@
 import { NextResponse } from "next/server";
 import { drawAvatar } from "@/lib/illustrate";
 import { runDraw, serveIllustration } from "@/lib/http/serveIllustration";
+import { isRole } from "@/lib/members";
 import { loadFamily } from "@/lib/storage";
-import type { Role } from "@/templates";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 type Ctx = { params: Promise<{ id: string; role: string }> };
-const ROLES = new Set(["child", "mom", "dad"]);
 
 export async function GET(_req: Request, { params }: Ctx) {
   const { id, role } = await params;
   const family = await loadFamily(id).catch(() => null);
-  return serveIllustration("families", id, ROLES.has(role) ? family?.members[role as Role]?.avatar : null);
+  return serveIllustration("families", id, isRole(role) ? family?.members[role]?.avatar : null);
 }
 
 export async function POST(_req: Request, { params }: Ctx) {
   const { id, role } = await params;
-  if (!ROLES.has(role)) return NextResponse.json({ error: "无效的角色" }, { status: 400 });
-  return runDraw(() => drawAvatar(id, role as Role));
+  if (!isRole(role)) return NextResponse.json({ error: "无效的角色" }, { status: 400 });
+  return runDraw(() => drawAvatar(id, role));
 }

@@ -1,4 +1,10 @@
+import { ImageError } from "./errors";
 import type { ImageProvider } from "./index";
+
+// For trying the flow locally: PLACEHOLDER_DELAY_MS makes each image take a while,
+// PLACEHOLDER_FAIL_RATE (0–1) makes some attempts fail so retries can be seen.
+const DELAY_MS = Number(process.env.PLACEHOLDER_DELAY_MS ?? 0);
+const FAIL_RATE = Number(process.env.PLACEHOLDER_FAIL_RATE ?? 0);
 
 const PALETTES = [
   ["#fde2e4", "#fad2e1"],
@@ -16,6 +22,8 @@ function escape(s: string) {
 export const placeholderProvider: ImageProvider = {
   name: "placeholder",
   async generate({ prompt, orientation = "landscape" }) {
+    if (DELAY_MS > 0) await new Promise((r) => setTimeout(r, DELAY_MS));
+    if (Math.random() < FAIL_RATE) throw new ImageError("模拟的生成失败（PLACEHOLDER_FAIL_RATE）", true);
     const [w, h] = orientation === "portrait" ? [1024, 1536] : [1536, 1024];
     let hash = 0;
     for (const ch of prompt) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;

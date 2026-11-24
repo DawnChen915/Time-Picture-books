@@ -1,20 +1,48 @@
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
-import { loadFamily, saveAsset, saveBook, saveFamily } from "@/lib/storage";
-import { ChildInfoSchema, type Book, type Family, type Member } from "@/lib/types";
-import { fillName, getTemplate, ROLE_LABEL } from "@/templates";
+import { deleteFamilyFiles, readDescription, replaceMember, savePhoto, type PhotoUpload } from "@/lib/members";
+import { listBooks, loadFamily, saveBook, saveFamily, updateFamily } from "@/lib/storage";
+import { ChildInfoSchema, getSlot, type Book, type BookSummary, type Family } from "@/lib/types";
+import { fillName, getTemplate, type Role } from "@/templates";
 
 export const runtime = "nodejs";
 
-const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-const PHOTO_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
-
 const bad = (error: string) => NextResponse.json({ error }, { status: 400 });
+
+/** List a family's books, newest first: GET /api/books?familyId=... */
+export async function GET(req: Request) {
+  const familyId = new URL(req.url).searchParams.get("familyId");
+  if (!familyId) return NextResponse.json([]);
+  const family = await loadFamily(familyId).catch(() => null);
+  if (!family) return NextResponse.json([]);
+  const books = (await listBooks()).filter((b) => b.familyId === familyId);
+  const summaries: BookSummary[] = books
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((b) => {
+      const slots = Array.from({ length: b.pages.length + 1 }, (_, i) => getSlot(b, i)!);
+      return {
+        id: b.id,
+        title: b.title,
+        templateId: b.templateId,
+        createdAt: b.createdAt,
+        childName: b.childName,
+        childAge: b.childAge ?? family.childAge,
+        coverFile: b.cover.status === "done" ? b.cover.file : undefined,
+        done: slots.filter((s) => s.status === "done").length,
+        failed: slots.filter((s) => s.status === "error").length,
+        total: slots.length,
+      };
+    });
+  return NextResponse.json(summaries);
+}
 
 /**
  * Create a book from a template. Multipart form fields:
- * templateId, childName, childAge, childGender, familyId (optional, to reuse avatars),
- * and per role in the template's cast: photo_<role> (file), desc_<role>, reuse_<role>=1.
+ * - templateId
+ * - familyId: the saved family profile to reuse. Without it a new profile is created.
+ * - childName, childAge, childGender: required for a new family, optional updates for a saved one.
+ * - per role in the template's cast: photo_<role> (file), desc_<role>, replace_<role>=1.
+ *   A saved member is reused as-is unless a photo or replace_<role> is sent.
  */
 export async function POST(req: Request) {
   const form = await req.formData().catch(() => null);
@@ -23,47 +51,59 @@ export async function POST(req: Request) {
   const template = getTemplate(String(form.get("templateId") ?? ""));
   if (!template) return bad("请选择一个故事");
 
-  const child = ChildInfoSchema.safeParse({
+  const existingId = String(form.get("familyId") ?? "");
+  const existing = existingId ? await loadFamily(existingId).catch(() => null) : null;
+
+  const hasInfo = form.has("childName");
+  const info = ChildInfoSchema.safeParse({
     childName: form.get("childName"),
     childAge: form.get("childAge"),
     childGender: form.get("childGender"),
   });
-  if (!child.success) return bad(child.error.issues[0]?.message ?? "宝宝信息有误");
+  if ((hasInfo || !existing) && !info.success) return bad(info.error?.issues[0]?.message ?? "宝宝信息有误");
 
-  const existingId = String(form.get("familyId") ?? "");
-  const existing = existingId ? await loadFamily(existingId).catch(() => null) : null;
-  const family: Family = existing ?? { id: nanoid(12), createdAt: new Date().toISOString(), members: {}, ...child.data };
-  // Avatars depend on the child's age and gender, so redraw the child if those changed.
-  const childChanged = existing && (existing.childAge !== child.data.childAge || existing.childGender !== child.data.childGender);
-  Object.assign(family, child.data);
+  const now = new Date().toISOString();
+  const familyId = existing?.id ?? nanoid(12);
 
+  // Store new photos first (outside the record lock), then apply all changes in one update.
+  const uploads: Partial<Record<Role, { photo: PhotoUpload | null; description: string }>> = {};
   for (const role of template.cast) {
-    const current = family.members[role];
-    const photo = form.get(`photo_${role}`);
-    const description = String(form.get(`desc_${role}`) ?? "").trim().slice(0, 200);
-    const reuse = form.get(`reuse_${role}`) === "1" && current?.avatar.status === "done" && !(role === "child" && childChanged);
-    if (reuse) continue;
-
-    const member: Member = { role, description, avatar: { status: "pending", prompt: "" } };
-    if (photo instanceof File && photo.size > 0) {
-      const ext = PHOTO_TYPES[photo.type];
-      if (!ext) return bad(`${ROLE_LABEL[role]}的照片请用 JPG、PNG 或 WebP`);
-      if (photo.size > MAX_PHOTO_BYTES) return bad(`${ROLE_LABEL[role]}的照片太大了，请小于 10MB`);
-      member.photoFile = `photo-${role}-${Date.now()}.${ext}`;
-      member.photoMimeType = photo.type;
-      await saveAsset("families", family.id, member.photoFile, Buffer.from(await photo.arrayBuffer()));
+    const photo = await savePhoto(familyId, role, form.get(`photo_${role}`));
+    if (typeof photo === "string") return bad(photo);
+    const saved = existing?.members[role];
+    if (!saved || photo || form.get(`replace_${role}`) === "1") {
+      uploads[role] = { photo, description: readDescription(form, `desc_${role}`) };
     }
-    family.members[role] = member;
   }
-  await saveFamily(family);
+
+  const orphaned: string[] = [];
+  const apply = (f: Family) => {
+    if (info.success) Object.assign(f, info.data);
+    for (const [role, input] of Object.entries(uploads) as [Role, NonNullable<(typeof uploads)[Role]>][]) {
+      if (f.members[role]?.avatar.status === "generating") continue; // being redrawn right now; keep that one
+      orphaned.push(...replaceMember(f, role, input));
+    }
+    f.updatedAt = now;
+  };
+
+  let family: Family;
+  if (existing) {
+    family = await updateFamily(familyId, apply);
+  } else {
+    family = { id: familyId, createdAt: now, members: {}, ...(info.data as NonNullable<typeof info.data>) };
+    apply(family);
+    await saveFamily(family);
+  }
+  await deleteFamilyFiles(familyId, orphaned);
 
   const name = family.childName;
   const book: Book = {
     id: nanoid(12),
-    createdAt: new Date().toISOString(),
+    createdAt: now,
     familyId: family.id,
     templateId: template.id,
     childName: name,
+    childAge: family.childAge,
     title: fillName(template.title, name),
     dedication: fillName(template.dedication, name),
     cast: template.cast,

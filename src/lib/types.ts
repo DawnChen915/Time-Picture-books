@@ -10,6 +10,10 @@ export interface Illustration {
   mimeType?: string;
   error?: string;
   startedAt?: string;
+  /** Which attempt is running while the server retries a failed generation (1-based). */
+  attempt?: number;
+  /** Why the previous attempt failed, shown while the next one runs. */
+  retryReason?: string;
 }
 
 export interface Member {
@@ -17,6 +21,12 @@ export interface Member {
   /** Uploaded photo, deleted once the avatar is drawn. */
   photoFile?: string;
   photoMimeType?: string;
+  /**
+   * The avatar being replaced, kept until the new one is drawn. When there is no new photo it is
+   * used as the reference, so the character can be tweaked by description ("short hair now").
+   */
+  baseAvatarFile?: string;
+  baseAvatarMimeType?: string;
   /** Optional text description, used when there is no photo or alongside it. */
   description: string;
   avatar: Illustration;
@@ -26,6 +36,7 @@ export interface Member {
 export interface Family {
   id: string;
   createdAt: string;
+  updatedAt?: string;
   childName: string;
   childAge: number;
   childGender: "boy" | "girl" | "unspecified";
@@ -44,11 +55,27 @@ export interface Book {
   familyId: string;
   templateId: string;
   childName: string;
+  /** The child's age when the book was made, so the bookshelf can show it as a timeline. */
+  childAge?: number;
   title: string;
   dedication: string;
   cast: Role[];
   cover: Illustration;
   pages: BookPage[];
+}
+
+/** What the bookshelf shows for each book. */
+export interface BookSummary {
+  id: string;
+  title: string;
+  templateId: string;
+  createdAt: string;
+  childName: string;
+  childAge: number;
+  coverFile?: string;
+  done: number;
+  total: number;
+  failed: number;
 }
 
 /** Slot 0 is the cover, slot n (1..pages.length) is page n. */

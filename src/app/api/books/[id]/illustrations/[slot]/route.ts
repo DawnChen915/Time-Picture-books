@@ -5,7 +5,7 @@ import { loadBook } from "@/lib/storage";
 import { getSlot } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 type Ctx = { params: Promise<{ id: string; slot: string }> };
 
